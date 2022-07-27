@@ -30,6 +30,20 @@ class RealTimeTracking(object):
         self.particles = None
         self.alphas = None
 
+    def _flipNeedle(self, H_camera_target): 
+        H_wtarget_rtarget = np.array([[-1, 0,  0, 0], 
+                                      [ 0, 1,  0, 0], 
+                                      [ 0, 0, -1, 0], 
+                                      [ 0, 0,  0, 1]])
+        H_camera_target = np.matmul(H_camera_target, H_wtarget_rtarget)
+        corrected_pose = np.zeros(7)
+        corrected_pose[:3] = H_camera_target[:3,3]
+        corrected_quat = quaternions.mat2quat(H_camera_target[:3,:3]) #wxyz
+        corrected_pose[-1] = corrected_quat[0]
+        corrected_pose[3:-1] = corrected_quat[1:]
+
+        return corrected_pose
+
     def runTracking(self, feature_points, pose=None, action=None, img=None): 
         #dictionary of new observation features
         new_ob = {'f_pts': feature_points}
@@ -79,20 +93,14 @@ class RealTimeTracking(object):
             H_camera_target = self.n_track.pose2HMatrix(self.pose_u[:,None]).detach().numpy()
 
             #check if the needle is flipped
-            real_z_dir = self.n_recon.zDirection()
-            current_z_dir = np.sign(H_camera_target[2,2])
+            #get the real z direction
+            real_z_dir, H_img_nimg = self.n_recon.zDirection()
+            #measure the estimated z direction
+            current_z_dir = self.n_recon.estZDirection(H_camera_target, H_img_nimg)
             if not real_z_dir == current_z_dir: 
-                H_wtarget_rtarget = np.array([[-1, 0,  0, 0], 
-                                              [ 0, 1,  0, 0], 
-                                              [ 0, 0, -1, 0], 
-                                              [ 0, 0,  0, 1]])
-                H_camera_target = np.matmul(H_camera_target, H_wtarget_rtarget)
+                print('flip the needle...')
+                corrected_pose = self._flipNeedle(H_camera_target)
                 #resample the particles
-                corrected_pose = np.zeros(7)
-                corrected_pose[:3] = H_camera_target[:3,3]
-                corrected_quat = quaternions.mat2quat(H_camera_target[:3,:3]) #wxyz
-                corrected_pose[-1] = corrected_quat[0]
-                corrected_pose[3:-1] = corrected_quat[1:]
                 self.particles, self.alphas = self.n_track.initParticles(corrected_pose, self.pose_var, \
                                                                          num=self.particle_num) #(7,n), (n,)
                 self.pose_u = torch.from_numpy(self.n_track.particles2Pose(self.particles, self.alphas)) #(7,)

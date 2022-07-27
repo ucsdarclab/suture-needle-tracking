@@ -11,6 +11,13 @@ class NeedleReconstruction(object):
         self.K = K.copy() #camera calibration matrix
         self.r_n = r_n #radius of the needle
 
+        #for estimating the z-direction of the needle
+        body_thetas = np.array([135, 180, 225]) * np.pi / 180
+        self.pts_needle_nbody = np.zeros([4,3])
+        self.pts_needle_nbody[0] = r_n * np.cos(body_thetas)
+        self.pts_needle_nbody[1] = r_n * np.sin(body_thetas)
+        self.pts_needle_nbody[3] = 1.
+
     def getEllipseInfo(self, e_equ_coeffs=None, feature_points=None): 
         if not e_equ_coeffs is None: 
             #e_equ_coeffs: ax^2 + 2bxy + cy^2 + 2dx + 2ey + f = 0
@@ -30,7 +37,7 @@ class NeedleReconstruction(object):
         """
 
         y_nimg = np.zeros(3)
-        y_nimg[:2] = self.feature_pts[:,1] - self.feature_pts[:,0] #tail - tip
+        y_nimg[:2] = self.feature_pts[:,1] - self.feature_pts[:,0] #tip - tail
         y_nimg /= np.linalg.norm(y_nimg)
         x_nimg = np.cross(y_nimg, np.array([0.,0.,1.]))
         H_img_nimg = np.eye(4)
@@ -41,11 +48,18 @@ class NeedleReconstruction(object):
         body_pxs_img = np.concatenate([self.feature_pts[:,2:], np.zeros([1,body_pts_num]), \
                                        np.ones([1,body_pts_num])], axis=0) #(4,?)
         body_pxs_nimg = np.matmul(np.linalg.inv(H_img_nimg), body_pxs_img) #(4,?)
-        sign_body_pxs_nimg = np.sign(body_pxs_nimg[0]) #(?,)
-        assert np.sum(abs(sign_body_pxs_nimg)) == body_pts_num, \
-                'All detected body points should be on the same side of the needle.'
 
-        return -sign_body_pxs_nimg[0]
+        return -np.sign(np.mean(body_pxs_nimg[0])), H_img_nimg
+
+    def estZDirection(self, H_camera_target, H_img_nimg): 
+        pts_camera_nbody = np.matmul(H_camera_target, self.pts_needle_nbody)[:3] #(3,3)
+        pxs_img_nbody = np.matmul(self.K, pts_camera_nbody/pts_camera_nbody[2])[:2] #(2,3)
+        hpxs_img_nbody = np.zeros([4,3]) #homogeneous form
+        hpxs_img_nbody[:2] = pxs_img_nbody
+        hpxs_img_nbody[3] = 1.
+        pxs_nimg_nbody = np.matmul(np.linalg.inv(H_img_nimg), hpxs_img_nbody)[:2] #(2,3)
+
+        return -np.sign(np.mean(pxs_nimg_nbody[0]))
 
     def _targetPlaneEigenSpaces(self): 
         C = np.zeros([3,3])
@@ -118,7 +132,7 @@ class NeedleReconstruction(object):
         Ts, ns, d = self._target3DLocation(eig_vals, R_1)
         assert Ts.shape[1] == ns.shape[1]
 
-        z_dir = self.zDirection()
+        z_dir, _ = self.zDirection()
         ns *= z_dir
 
         feature_pts = np.concatenate([self.feature_pts[:,0][:,None], [[1]]], axis=0) #(3,1)
@@ -208,7 +222,7 @@ class NeedleReconstruction(object):
         needle_pixels = np.matmul(self.K, needle_xyzs/needle_xyzs[2][None,:]) #(3,3) * ((3,?) ./ (1,?))
         needle_pixels = needle_pixels.astype(int)
         for i in range(needle_pixels.shape[1]): 
-            cv2.circle(img, tuple(needle_pixels[:2,i]), 1, (0,0,0), thickness=1) #black
+            cv2.circle(img, tuple(needle_pixels[:2,i]), 1, (0,255,0), thickness=1) #green
 
         feature_pt_xyz = np.array([0, -self.r_n, 0, 1])[:,None] #(4,1)
         feature_pt_xyz = np.matmul(H_camera_target, feature_pt_xyz)[:3] #(3,1)
@@ -216,15 +230,6 @@ class NeedleReconstruction(object):
         feature_pt_pixel = np.matmul(self.K, feature_pt_xyz/feature_pt_xyz[2]) #(3,3) * ((3,1) ./ (1,))
         feature_pt_pixel = feature_pt_pixel.astype(int)
         cv2.circle(img, tuple(feature_pt_pixel[:2,0]), 3, (0,0,255), thickness=3) #red
-
-        box_center_xyz = np.zeros([4,1])
-        box_center_xyz[0] = -self.r_n / 2.
-        box_center_xyz[3] = 1.
-        box_center_xyz = np.matmul(H_camera_target, box_center_xyz)[:3] #(3,1)
-
-        box_center_pixel = np.matmul(self.K, box_center_xyz/box_center_xyz[2]) #(3,3) * ((3,1 ./ (1,)))
-        box_center_pixel = box_center_pixel.astype(int)
-        cv2.circle(img, tuple(box_center_pixel[:2,0]), 3, (0,255,0), thickness=3) #green
 
         circle_center_xyz = np.array([0.,0.,0.,1.])[:,None] #(4,1)
         circle_center_xyz[3] = 1.
